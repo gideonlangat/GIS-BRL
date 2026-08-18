@@ -1,1 +1,122 @@
+#Configuration
+import numpy as np
+import pandas as pd
 
+RANDOM_SEED = 42
+
+COUNTIES = [
+    "Kisumu", "Siaya", "Homa Bay", "Migori",
+    "Kakamega", "Bungoma", "Busia", "Vihiga",
+]
+N_COUNTIES = len(COUNTIES)
+
+WAVES = [2015, 2020]
+REAL_OBSERVED_CASES = {
+    #              2015  2020
+    "Bungoma":    (25,   53),
+    "Kakamega":   (27,   29),
+    "Busia":      (39,   40),
+    "Siaya":      (40,   44),
+    "Vihiga":     (14,   12),
+    "Kisumu":     (22,   23),
+    "Homa Bay":   (27,   10),
+    "Migori":     (19,   23),
+}
+
+COUNTY_PROFILES = {
+    "Kisumu":   dict(p_case=0.38, p_net=0.55, p_spray=0.22, p_pf=0.30, p_res=0.95, Age=(5,110),temp=(22, 31), rain=(1, 9)),
+    "Siaya":    dict(p_case=0.42, p_net=0.50, p_spray=0.18, p_pf=0.33, p_res=0.96, Age=(5,110), temp=(21, 30), rain=(1, 8)),
+    "Homa Bay": dict(p_case=0.40, p_net=0.48, p_spray=0.20, p_pf=0.31, p_res=0.95,Age=(5,110), temp=(21, 31), rain=(1, 9)),
+    "Migori":   dict(p_case=0.35, p_net=0.52, p_spray=0.19, p_pf=0.28, p_res=0.94,Age=(5,110), temp=(20, 30), rain=(2, 10)),
+    "Kakamega": dict(p_case=0.28, p_net=0.60, p_spray=0.25, p_pf=0.22, p_res=0.93,Age=(5,110), temp=(19, 28), rain=(2, 10)),
+    "Bungoma":  dict(p_case=0.25, p_net=0.58, p_spray=0.24, p_pf=0.20, p_res=0.92,Age=(5,110), temp=(18, 28), rain=(2, 9)),
+    "Busia":    dict(p_case=0.33, p_net=0.53, p_spray=0.21, p_pf=0.27, p_res=0.94,Age=(5,110),temp=(20, 29), rain=(1, 9)),
+    "Vihiga":   dict(p_case=0.22, p_net=0.62, p_spray=0.26, p_pf=0.18, p_res=0.91,Age=(5,110),temp=(18, 27), rain=(2, 9)),
+}
+
+
+N_PER_COUNTY_WAVE = 1500 
+def _calibrate_spatiotemporal_effects():
+    counties = ["Kisumu", "Siaya", "Homa Bay", "Migori",
+                "Kakamega", "Bungoma", "Busia", "Vihiga"]
+    target_logit = np.zeros((len(counties), 2))
+    for i, c in enumerate(counties):
+        for w, cnt in enumerate(REAL_OBSERVED_CASES[c]):
+            p = cnt / N_PER_COUNTY_WAVE
+            target_logit[i, w] = np.log(p / (1 - p))
+    intercept = float(target_logit.mean())
+    u = target_logit.mean(axis=1) - intercept
+    gamma = target_logit.mean(axis=0) - intercept
+    return intercept, dict(zip(counties, u)), dict(zip([2015, 2020], gamma))
+
+CALIBRATED_INTERCEPT, CALIBRATED_U, CALIBRATED_GAMMA = _calibrate_spatiotemporal_effects()
+
+# Bayesian estimation (non-reversible MH-style sampler)
+N_CHAINS = 3
+N_ITER = 10000
+BURN_IN = 1000
+STEP_SIZE_BETA = 0.05
+STEP_SIZE_SIGMA2 = 0.05
+FLIP_PROB_Q = 0.15            # probability of flipping auxiliary direction phi
+PRIOR_MU = 0.0
+PRIOR_TAU2 = 25.0              # non-informative prior variance for beta mean
+PRIOR_ALPHA = 2.0              # inverse-gamma shape for sigma2
+PRIOR_LAMBDA = 1.0             # inverse-gamma scale for sigma2
+SPATIAL_SIGMA2_U = 0.25        # variance of spatial random effect u_i
+TEMPORAL_SIGMA2_GAMMA = 0.15   # variance of temporal effect gamma_t
+
+COVARIATE_NAMES = [
+    "net_use", "spray_use",
+    "Age", "wealth_middle", "wealth_richer", "wealth_richest",   
+    "educ_primary", "educ_secondary", "educ_tertiary", 
+    "temperature", "rainfall",
+]
+N_BETA = len(COVARIATE_NAMES)
+N_WEALTH_LEVELS = 4
+N_EDUC_LEVELS = 4
+TRUE_BETA = np.array([
+    -0.9, -0.7,                # net_use, spray_use
+    0.31,                      # Age
+    -0.10, -0.20, -0.35,       # wealth_middle, wealth_richer, wealth_richest
+    -0.12, -0.22, -0.30,       # educ_primary, educ_secondary, educ_tertiary
+    0.05, 0.04,                # temperature, rainfall
+])
+
+# Reinforcement learning (5-critic min-max ensemble TD3)
+N_CRITICS = 5
+STATE_DIM = 1 + N_COUNTIES
+ACTION_DIM = 2                 # (spraying rate, net-use rate)
+ACTOR_LR = 1e-3
+CRITIC_LR = 1e-3
+GAMMA = 0.99
+TAU = 0.005                    # soft update coefficient (delta)
+POLICY_NOISE = 0.15
+NOISE_CLIP = 0.3
+EXPLORATION_NOISE = 0.15
+POLICY_DELAY = 2
+BATCH_SIZE = 64
+REPLAY_CAPACITY = 50_000
+
+GRID_MIN, GRID_MAX = 0.0, 20.0
+HUMAN_SPEED = 2.0
+VECTOR_SPEED = 0.8             # slower than the human agent
+INTERACTION_THRESHOLD = 6.5    # normalized proximity threshold
+                                
+BASE_TRANSMISSION_RATE = 0.35  # rho: probability of transmission given proximity
+EPISODE_MAX_STEPS = 60         # ~ "avoid interaction for 30s" horizon (2 checks/sec)
+
+EFFECT_SPRAY = 0.42        # asymptotic max protective effect of spraying
+EFFECT_NET = 0.58          # asymptotic max protective effect of net use
+K_SPRAY = 2.5               # saturation rate (how fast spraying's effect saturates)
+K_NET = 3.0                 # saturation rate for net use
+COST_SPRAY = 0.006
+COST_NET = 0.004
+
+BOUNDARY_BARRIER = 0.06
+
+N_TRAIN_EPISODES = 100000
+EVAL_EVERY = 300
+N_EVAL_EPISODES = 20
+
+# Evaluation rollout for predicted case counts
+CASE_EVAL_STEPS = 1200
